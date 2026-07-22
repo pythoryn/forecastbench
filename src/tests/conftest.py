@@ -15,6 +15,22 @@ from sources.metaculus import MetaculusSource
 from sources.polymarket import PolymarketSource
 from sources.yfinance import YfinanceSource
 
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Add command-line options for opt-in integration tests."""
+    live_group = parser.getgroup("forecastbench live tests")
+    live_group.addoption(
+        "--question-set-date",
+        action="store",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help=(
+            "Run the live, read-only question-set sampling test as though the set were "
+            "created on this date."
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Time-freezing fixture
 # ---------------------------------------------------------------------------

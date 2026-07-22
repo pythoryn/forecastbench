@@ -23,7 +23,9 @@ from datetime import datetime, timedelta
 from enum import Enum
 from fractions import Fraction
 
+import numpy as np
 import pandas as pd
+from scipy.optimize import Bounds, LinearConstraint, milp
 from tqdm import tqdm
 from utils import gcp
 
@@ -113,12 +115,19 @@ def process_questions(
     market_sampled = []
     market_available = []
 
+    market_samples = {}
+    if question_set_target == QuestionSetTarget.LLM:
+        market_samples = sample_market_questions_across_sources(processed_questions, to_questions)
+
     for source, values in processed_questions.items():
         num_single = to_questions[source]["num_questions_to_sample"]
         df_available = values["dfq"].copy()
 
         # Sample questions for this source
-        values["dfq"] = single_generation_func(values, num_single)
+        if source in market_samples:
+            values["dfq"] = market_samples[source]
+        else:
+            values["dfq"] = single_generation_func(values, num_single)
         df_sampled = values["dfq"]
         num_found += len(df_sampled)
 
@@ -743,21 +752,8 @@ def plot_sampling_distribution(
     fig.show()
 
 
-def stratified_sample_questions(dfq: pd.DataFrame, n_target: int) -> pd.DataFrame:
-    """Sample questions using stratified sampling to achieve target distribution.
-
-    This ensures we get the desired distribution regardless of source data skew.
-
-    Args:
-        dfq (pd.DataFrame): DataFrame with bin_weight column and composite bins
-        n_target (int): Number of questions to sample
-
-    Returns
-        result (pd.DataFrame): Sampled questions
-    """
-    if len(dfq) == 0 or n_target == 0:
-        return pd.DataFrame()
-
+def _allocate_samples_to_bins(dfq: pd.DataFrame, n_target: int) -> tuple[pd.DataFrame, dict]:
+    """Calculate the fixed number of samples to take from each composite bin."""
     dfq_weighted = dfq[dfq["bin_weight"] > 0].copy()
 
     if len(dfq_weighted) == 0:
@@ -806,17 +802,147 @@ def stratified_sample_questions(dfq: pd.DataFrame, n_target: int) -> pd.DataFram
                 if excess == 0:
                     break
 
-    # Sample from each bin
-    sampled_dfs = []
+    return dfq_weighted, bin_samples
+
+
+def _sample_bin_groups_balancing_categories(bin_groups: list[tuple]) -> list[tuple]:
+    """Fill fixed source/bin quotas while minimizing global category-count range.
+
+    Each bin group is (source, composite_bin, candidate_rows, required_count).
+    """
+    choices = []
+    for group_index, (_, _, bin_df, _) in enumerate(bin_groups):
+        choices.extend(
+            (group_index, category, int(available))
+            for category, available in bin_df["category"].value_counts().items()
+        )
+    categories = sorted({category for _, category, _ in choices})
+
+    # One integer variable per feasible group/category choice, plus variables for the
+    # largest and smallest category totals. The objective minimizes their difference.
+    n_choices = len(choices)
+    objective = np.r_[np.zeros(n_choices), 1, -1]
+    upper_bounds = np.r_[[available for _, _, available in choices], np.inf, np.inf]
+
+    # Hard constraints: every source/bin group contributes its previously fixed quota.
+    group_rows = [
+        [int(choice_group == group_index) for choice_group, _, _ in choices] + [0, 0]
+        for group_index in range(len(bin_groups))
+    ]
+    group_targets = [n_samples for _, _, _, n_samples in bin_groups]
+
+    # Soft objective: bound every category total by the shared maximum and minimum.
+    category_rows = []
+    for category in categories:
+        totals = [int(choice_category == category) for _, choice_category, _ in choices]
+        category_rows.extend([totals + [-1, 0], totals + [0, -1]])
+
+    lower_limits = group_targets + [-np.inf, 0] * len(categories)
+    upper_limits = group_targets + [0, np.inf] * len(categories)
+
+    result = milp(
+        c=objective,
+        integrality=np.r_[np.ones(n_choices), np.zeros(2)],
+        bounds=Bounds(np.zeros(n_choices + 2), upper_bounds),
+        constraints=LinearConstraint(
+            np.array(group_rows + category_rows), lower_limits, upper_limits
+        ),
+    )
+    if not result.success:
+        raise RuntimeError(f"Could not allocate market-question categories: {result.message}")
+
+    sampled_groups = []
+    for group_index, (source, _, bin_df, _) in enumerate(bin_groups):
+        sampled_categories = []
+        for index, (choice_group, category, _) in enumerate(choices):
+            if choice_group == group_index:
+                n_samples = int(round(result.x[index]))
+                if n_samples:
+                    sampled_categories.append(
+                        bin_df[bin_df["category"] == category].sample(n=n_samples)
+                    )
+        sampled_groups.append((source, pd.concat(sampled_categories, ignore_index=True)))
+
+    return sampled_groups
+
+
+def stratified_sample_questions(dfq: pd.DataFrame, n_target: int) -> pd.DataFrame:
+    """Sample questions while preserving composite-bin counts and balancing categories.
+
+    Args:
+        dfq (pd.DataFrame): DataFrame with bin_weight, composite_bin and category columns
+        n_target (int): Number of questions to sample
+
+    Returns
+        result (pd.DataFrame): Sampled questions
+    """
+    if len(dfq) == 0 or n_target == 0:
+        return pd.DataFrame()
+
+    dfq_weighted, bin_samples = _allocate_samples_to_bins(dfq, n_target)
+
+    bin_groups = []
     for bin_name, n_samples in bin_samples.items():
         if n_samples > 0:
             bin_df = dfq_weighted[dfq_weighted["composite_bin"] == bin_name]
-            sampled = bin_df.sample(n=n_samples, replace=False)
-            sampled_dfs.append(sampled)
+            bin_groups.append(("", bin_name, bin_df, n_samples))
 
-    if not sampled_dfs:
+    if not bin_groups:
         raise ValueError("Stratified sampling produced no results.")
+    sampled_dfs = [sampled for _, sampled in _sample_bin_groups_balancing_categories(bin_groups)]
     return pd.concat(sampled_dfs, ignore_index=True)
+
+
+def _prepare_market_questions(dfq: pd.DataFrame) -> pd.DataFrame:
+    """Add the columns used to allocate market-question sampling bins."""
+    dfq = add_bin_columns(dfq)
+    dfq = create_composite_bins(dfq)
+    return calculate_bin_weights(dfq)
+
+
+def _drop_market_sampling_columns(dfq: pd.DataFrame) -> pd.DataFrame:
+    """Remove temporary columns used only while sampling market questions."""
+    return dfq.drop(columns=["market_value_bin", "time_horizon_bin", "composite_bin", "bin_weight"])
+
+
+def sample_market_questions_across_sources(questions: dict, allocations: dict) -> dict:
+    """Sample all market sources with a joint category allocation.
+
+    Source allocations and composite-bin counts are fixed first. Category balance only
+    determines which questions fill those slots, so unavailable categories cannot change
+    the source or market-value/time-horizon distributions.
+
+    Args:
+        questions (dict): Available questions keyed by source
+        allocations (dict): Number of questions to sample from each source
+
+    Returns
+        sampled_by_source (dict): Sampled market questions keyed by source
+    """
+    bin_groups = []
+    sampled_by_source = {}
+
+    for source, values in questions.items():
+        if source not in question_curation.MARKET_SOURCES:
+            continue
+
+        dfq = _prepare_market_questions(values["dfq"])
+        n_target = allocations[source]["num_questions_to_sample"]
+        dfq_weighted, bin_samples = _allocate_samples_to_bins(dfq, n_target)
+        sampled_by_source[source] = []
+
+        for bin_name, n_samples in bin_samples.items():
+            if n_samples > 0:
+                bin_df = dfq_weighted[dfq_weighted["composite_bin"] == bin_name]
+                bin_groups.append((source, bin_name, bin_df, n_samples))
+
+    for source, sampled in _sample_bin_groups_balancing_categories(bin_groups):
+        sampled_by_source[source].append(sampled)
+
+    return {
+        source: _drop_market_sampling_columns(pd.concat(sampled, ignore_index=True))
+        for source, sampled in sampled_by_source.items()
+    }
 
 
 def sample_market_questions(dfq: pd.DataFrame, n_target: int) -> pd.DataFrame:
@@ -834,22 +960,12 @@ def sample_market_questions(dfq: pd.DataFrame, n_target: int) -> pd.DataFrame:
     if len(dfq) == 0:
         raise ValueError("No market questions available for sampling.")
 
-    dfq = add_bin_columns(dfq=dfq)
-    dfq = create_composite_bins(dfq=dfq)
-    dfq = calculate_bin_weights(dfq=dfq)
+    dfq = _prepare_market_questions(dfq)
     df_result = stratified_sample_questions(
         dfq=dfq,
         n_target=n_target,
     )
-    df_result = df_result.drop(
-        columns=[
-            "market_value_bin",
-            "time_horizon_bin",
-            "composite_bin",
-            "bin_weight",
-        ]
-    )
-    return df_result
+    return _drop_market_sampling_columns(df_result)
 
 
 def llm_sample_questions(values: dict, n_single: int) -> pd.DataFrame:
