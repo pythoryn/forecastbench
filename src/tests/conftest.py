@@ -8,8 +8,8 @@ import pandas as pd
 import pytest
 
 from sources.acled import AcledSource
+from sources.dbnomics import DbnomicsSource
 from sources.fred import FredSource
-from sources.infer import InferSource
 from sources.manifold import ManifoldSource
 from sources.metaculus import MetaculusSource
 from sources.polymarket import PolymarketSource
@@ -89,14 +89,6 @@ def acled_source():
 
 
 @pytest.fixture()
-def infer_source():
-    """Return an InferSource instance with a fake API key."""
-    src = InferSource()
-    src.api_key = "test-key"
-    return src
-
-
-@pytest.fixture()
 def manifold_source():
     """Return a ManifoldSource instance."""
     return ManifoldSource()
@@ -120,6 +112,12 @@ def polymarket_source():
 def yfinance_source():
     """Return a YfinanceSource instance."""
     return YfinanceSource()
+
+
+@pytest.fixture()
+def dbnomics_source():
+    """Return a DbnomicsSource instance."""
+    return DbnomicsSource()
 
 
 # ---------------------------------------------------------------------------
@@ -200,103 +198,6 @@ def make_acled_resolution_df(rows, event_columns=None):
 def make_question_set_df(rows):
     """Build a DataFrame with [id, source, resolution_dates] for explode_question_set."""
     return pd.DataFrame(rows)
-
-
-# ---------------------------------------------------------------------------
-# INFER-specific factories
-# ---------------------------------------------------------------------------
-
-
-def make_infer_api_question(**overrides):
-    """Build a realistic INFER API question dict. Override specific fields as needed."""
-    base = {
-        "id": 9999,
-        "name": "Will X happen by end of 2026?",
-        "description": "<p>Background text.</p>",
-        "clarifications": [],
-        "state": "active",
-        "type": "Forecast::YesNoQuestion",
-        "active?": True,
-        "binary?": False,
-        "resolved?": False,
-        "resolved_at": None,
-        "ends_at": "2026-06-01T04:00:00.000Z",
-        "starts_at": "2026-01-01T20:00:00.000Z",
-        "scoring_start_time": "2026-01-01T15:00:00.000-05:00",
-        "scoring_end_time": "2026-06-01T00:00:00.000-05:00",
-        "created_at": "2026-01-01T18:00:00.000Z",
-        "closed_at": None,
-        "voided_at": None,
-        "answers": [
-            {
-                "id": 9001,
-                "name": "Yes",
-                "probability": 0.65,
-                "display_probability": "65%",
-                "predictions_count": 50,
-                "answer_name": "Yes",
-            },
-            {
-                "id": 9002,
-                "name": "No",
-                "probability": 0.35,
-                "display_probability": "35%",
-                "predictions_count": 50,
-                "answer_name": "No",
-            },
-        ],
-    }
-    base.update(overrides)
-    return base
-
-
-def make_infer_prediction_set(created_at, yes_prob):
-    """Build a realistic INFER prediction set dict."""
-    return {
-        "id": 999999,
-        "type": "Forecast::OpinionPoolPredictionSet",
-        "question_id": 9999,
-        "created_at": created_at,
-        "predictions": [
-            {
-                "answer_name": "Yes",
-                "final_probability": yes_prob,
-                "forecasted_probability": yes_prob,
-                "starting_probability": yes_prob,
-            },
-            {
-                "answer_name": "No",
-                "final_probability": round(1 - yes_prob, 4),
-                "forecasted_probability": round(1 - yes_prob, 4),
-                "starting_probability": round(1 - yes_prob, 4),
-            },
-        ],
-    }
-
-
-def make_infer_fetch_df(rows):
-    """Build a DataFrame matching InferFetchFrame schema."""
-    defaults = {
-        "question": "N/A",
-        "background": "N/A",
-        "url": "N/A",
-        "resolved": False,
-        "forecast_horizons": "N/A",
-        "freeze_datetime_value": "N/A",
-        "freeze_datetime_value_explanation": "N/A",
-        "market_info_resolution_criteria": "N/A",
-        "market_info_open_datetime": "N/A",
-        "market_info_close_datetime": "N/A",
-        "market_info_resolution_datetime": "N/A",
-        "fetch_datetime": "2026-01-15T00:00:00+00:00",
-        "probability": 0.5,
-        "nullify_question": False,
-    }
-    df = pd.DataFrame(rows)
-    for col, default in defaults.items():
-        if col not in df.columns:
-            df[col] = default
-    return df
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +429,59 @@ def make_polymarket_fetch_df(rows):
         "fetch_datetime": "2026-01-15T00:00:00+00:00",
         "probability": 0.5,
         "historical_prices": [{"date": "2024-06-01", "value": 0.5}],
+    }
+    df = pd.DataFrame(rows)
+    for col, default in defaults.items():
+        if col not in df.columns:
+            df[col] = default
+    return df
+
+
+# ---------------------------------------------------------------------------
+# DBnomics-specific factories
+# ---------------------------------------------------------------------------
+
+
+def make_dbnomics_api_response(
+    period_values,
+    provider_name="MeteoFrance",
+    dataset_name="Temperature",
+    series_name="Abbeville",
+):
+    """Build a DBnomics ``/series`` API response dict.
+
+    Args:
+        period_values (list): List of (period_str, value) tuples; value is a float or "NA".
+        provider_name (str): Provider name returned under provider.name.
+        dataset_name (str): Dataset name on the series doc.
+        series_name (str): Series name on the series doc.
+    """
+    periods = [p for p, _ in period_values]
+    values = [v for _, v in period_values]
+    return {
+        "provider": {"name": provider_name},
+        "series": {
+            "docs": [
+                {
+                    "period": periods,
+                    "value": values,
+                    "dataset_name": dataset_name,
+                    "series_name": series_name,
+                }
+            ]
+        },
+    }
+
+
+def make_dbnomics_fetch_df(rows):
+    """Build a DataFrame matching DbnomicsFetchFrame (one row per observation).
+
+    Each row should have at least 'id', 'period', 'value'. Missing columns get defaults.
+    """
+    defaults = {
+        "provider_name": "MeteoFrance",
+        "dataset_name": "Temperature",
+        "series_name": "Abbeville",
     }
     df = pd.DataFrame(rows)
     for col, default in defaults.items():

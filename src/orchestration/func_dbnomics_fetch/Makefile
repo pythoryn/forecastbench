@@ -21,7 +21,7 @@ Dockerfile: $(ROOT_DIR)src/helpers/Dockerfile.template
 deploy : main.py .gcloudignore requirements.txt Dockerfile
 	$(stage-orchestration-upload)
 	gcloud run jobs deploy \
-		func-data-infer-fetch \
+		func-data-dbnomics-fetch \
 		--project $(CLOUD_PROJECT) \
 		--region $(CLOUD_DEPLOY_REGION) \
 		--tasks 1 \

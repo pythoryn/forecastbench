@@ -157,10 +157,7 @@ metaculus-fetch:
 metaculus-update-questions:
 	$(MAKE) -C src/orchestration/func_metaculus_update || echo "* $@" >> $(MAKE_FAILURE_LOG)
 
-infer: infer-fetch infer-update-questions
-
-infer-fetch:
-	$(MAKE) -C src/orchestration/func_infer_fetch || echo "* $@" >> $(MAKE_FAILURE_LOG)
+infer: infer-update-questions
 
 infer-update-questions:
 	$(MAKE) -C src/orchestration/func_infer_update || echo "* $@" >> $(MAKE_FAILURE_LOG)
@@ -208,10 +205,10 @@ fred-update-questions:
 dbnomics: dbnomics-fetch dbnomics-update-questions
 
 dbnomics-fetch:
-	$(MAKE) -C src/questions/dbnomics/fetch || echo "* $@" >> $(MAKE_FAILURE_LOG)
+	$(MAKE) -C src/orchestration/func_dbnomics_fetch || echo "* $@" >> $(MAKE_FAILURE_LOG)
 
 dbnomics-update-questions:
-	$(MAKE) -C src/questions/dbnomics/update_questions || echo "* $@" >> $(MAKE_FAILURE_LOG)
+	$(MAKE) -C src/orchestration/func_dbnomics_update || echo "* $@" >> $(MAKE_FAILURE_LOG)
 
 tag-questions:
 	$(MAKE) -C src/metadata/tag_questions || echo "* $@" >> $(MAKE_FAILURE_LOG)

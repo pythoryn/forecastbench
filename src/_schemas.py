@@ -100,14 +100,6 @@ class ForecastFrame(pa.DataFrameModel):
         coerce = False
 
 
-class InferFetchFrame(QuestionFrame):
-    """Output of InferSource.fetch(). QuestionFrame plus transient fields for update()."""
-
-    fetch_datetime: Series[str]
-    probability: Series[object] = pa.Field(nullable=True)
-    nullify_question: Series[bool]
-
-
 class PolymarketFetchFrame(QuestionFrame):
     """Output of PolymarketSource.fetch(). QuestionFrame plus transient fields for update()."""
 
@@ -138,6 +130,23 @@ class MetaculusFetchFrame(pa.DataFrameModel):
     """Output of MetaculusSource.fetch(). Just question IDs from the search endpoint."""
 
     id: Series[str]
+
+    class Config:
+        """Schema configuration."""
+
+        strict = False
+        coerce = True
+
+
+class DbnomicsFetchFrame(pa.DataFrameModel):
+    """Output of DbnomicsSource.fetch(). Per-observation rows from the DBnomics API."""
+
+    id: Series[str]
+    period: Series[str]
+    value: Series[object]  # float observation or the string "NA" for missing values
+    provider_name: Series[str]
+    dataset_name: Series[str]
+    series_name: Series[str]
 
     class Config:
         """Schema configuration."""
