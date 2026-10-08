@@ -261,12 +261,7 @@ class KalshiSource(MarketSource):
 
             # Assign market details to dfq row
             routing = routing_by_id.get(question_id)
-            include_yes_label = (
-                routing is not None and bool(routing["needs_yes_label"])
-            ) or " [Yes: " in str(row["question"])
-            dfq.at[index, "question"] = self._question_text(
-                market, include_yes_label=include_yes_label
-            )
+            dfq.at[index, "question"] = self._question_text(market)
             dfq.at[index, "background"] = "N/A"
             settlement_sources = routing["settlement_sources"] if routing is not None else None
             dfq.at[index, "market_info_resolution_criteria"] = self._resolution_criteria(
@@ -907,10 +902,11 @@ class KalshiSource(MarketSource):
         return market.get("status") in _RESOLVED_STATUSES
 
     @staticmethod
-    def _question_text(market: dict, *, include_yes_label: bool) -> str:
-        """Add the child Yes label only when sibling market titles repeat."""
-        if include_yes_label:
-            return f'{market["title"]} [Yes: {market["yes_sub_title"]}]'
+    def _question_text(market: dict) -> str:
+        """Append the market's Yes label when it is available."""
+        yes_label = (market.get("yes_sub_title") or "").strip()
+        if yes_label:
+            return f'{market["title"]} [Yes: {yes_label}]'
         return market["title"]
 
     @staticmethod
